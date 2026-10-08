@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.91"
 license = "MIT"
-description = "run bash commands under bubblewrap"
+description = "Run bash commands under a configurable bubblewrap sandbox"
 
 [[bin]]
 name = "gray-sandbox"

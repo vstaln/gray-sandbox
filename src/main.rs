@@ -1,14 +1,9 @@
 //! gray-sandbox — run bash commands under bubblewrap.
 //!
-//! Port of the policy core of pi's `sandbox/` extension (MIT). The original
-//! rebuilt the bash tool around @anthropic-ai/sandbox-runtime; a sidecar
-//! can't replace tools, so `tool/before` on `bash` answers
-//! `{decision:"modify"}` wrapping the command:
+//! A sidecar cannot replace the built-in bash tool, so `tool/before` on
+//! `bash` answers `{decision:"modify"}` and wraps the command:
 //!
-//!   bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp \
-//!         [--ro-bind <p> <p>]… [--bind <p> <p>]… \
-//!         --bind <cwd> <cwd> --chdir <cwd> [--unshare-net] \
-//!         -- bash -lc '<quoted command>'
+//!   bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp //!         [--ro-bind <p> <p>]… [--bind <p> <p>]… //!         --bind <cwd> <cwd> --chdir <cwd> [--unshare-net] //!         -- bash -lc '<quoted command>'
 //!
 //! Everything is read-only except the session cwd (and configured extras);
 //! `--unshare-net` is applied unless config `network` is true.
