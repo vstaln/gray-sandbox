@@ -1,85 +1,108 @@
-<p align="center">
-  <img src="assets/gray-logo.svg" alt="gray" width="96">
-</p>
+<p align="center"><img src="assets/gray-logo.svg" width="120" alt="gray logo"></p>
 <h1 align="center">gray-sandbox</h1>
-<p align="center">Run bash commands under a configurable bubblewrap sandbox.</p>
+<p align="center">OS-level sandboxing for bash commands — bubblewrap filesystem isolation with a filtering network proxy, modeled on Anthropic's <code>sandbox-runtime</code>.</p>
 <p align="center">
   <a href="https://github.com/vstaln/gray-sandbox/blob/main/LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
   <img alt="gray plugin" src="https://img.shields.io/badge/gray-plugin-7aa2f7.svg">
   <img alt="rust" src="https://img.shields.io/badge/built%20with-rust-orange.svg">
 </p>
 
-Wrap `bash` tool calls in `bwrap` so commands run with a read-only system
-view and controlled writable paths.
+## What it does
 
-A sidecar cannot replace the built-in bash tool, so `tool/before` answers
-`{"decision":"modify"}` and rewrites the command to:
+Every `bash` tool call is rewritten to run inside a bubblewrap sandbox:
 
-```sh
-bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp       [--ro-bind <p> <p>]… [--bind <p> <p>]…       --bind <cwd> <cwd> --chdir <cwd> [--unshare-net]       -- bash -lc '<command>'
+```
+bwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc \
+      --tmpfs /tmp [ro/rw binds] --bind <cwd> <cwd> \
+      [deny shadows] --chdir <cwd> [--unshare-net] \
+      --setenv GRAY_SANDBOX nested -- bash -lc '<command>'
 ```
 
-Everything is read-only except the session cwd and configured extras.
-`--unshare-net` is applied unless networking is enabled in the config.
-
-## Config
-
-`~/.gray/sandbox/config.json`:
-
-```json
-{"enabled": true, "network": true, "extra_ro": [], "extra_rw": []}
-```
-
-Defaults: sandbox on, network allowed (a dev agent without network can't
-clone, build or push — turn it off with `/sandbox net off`). On top of
-`extra_rw`, toolchain dirs under $HOME are always bound read-write when they
-exist: `.cache .cargo .rustup .npm .bun .deno .local .gray go .m2 .gradle
-.venv .poetry` — so builds and installs work while the rest of $HOME stays
-read-only. `~/` in extra paths
-expands to `$HOME`; nonexistent extra paths are skipped so stale entries do
-not break wrapping.
+- **Filesystem** — root is read-only; the session cwd and dev caches
+  (`~/.cache .cargo .rustup .npm .bun .deno .local .gray .config/pip go
+  .m2 .gradle .venv .poetry .gitconfig`) are writable. Credential paths
+  (`~/.aws ~/.gnupg ~/.netrc ~/.docker`) are shadowed — dirs get a tmpfs,
+  files get a `/dev/null` bind. `deny_write` globs (default `.env`,
+  `.env.*`, `*.pem`, `*.key`) shadow matching cwd entries too.
+- **Network** — three modes:
+  - `on` (default) — full egress
+  - `off` — `--unshare-net`, loopback only
+  - `allowlist` — still `--unshare-net`, but the child sees
+    `http_proxy=http://127.0.0.1:18080` bridged by **socat** to a unix
+    socket where the sidecar runs a filtering CONNECT proxy checking
+    `allowed_domains`/`denied_domains` (exact or `*.suffix`). Fails
+    **closed** when socat isn't installed.
+- **Nesting** — the wrapper sets `GRAY_SANDBOX=nested`; every process
+  inside (incl. `gray -p` workers and subagents) inherits it and skips
+  wrapping — they're already confined by the outer sandbox.
+  `GRAY_SANDBOX=off` is the manual escape hatch.
+- **Passthrough** — commands invoking `bwrap`, `sudo`, `docker`,
+  `podman`, `socat`, `systemd-run`, … are never wrapped (configurable).
 
 ## Commands
 
-- `/sandbox on|off` — enable or disable wrapping
-- `/sandbox net on|off` — allow or deny network (`net off` → `--unshare-net`; default on)
-- `/sandbox ro <path>` / `/sandbox rw <path>` — add read-only or writable binds
-- `/sandbox status` — show config and `bwrap` availability
+| command | effect |
+|---|---|
+| `/sandbox` or `status` | show mode, lists, bwrap/socat presence |
+| `/sandbox on` / `off` | enable/disable the whole sandbox |
+| `/sandbox net on` / `off` / `allowlist` | network mode |
+| `/sandbox allow <domain>` / `deny <domain>` | add to allow/deny list (adding a domain switches net to `allowlist`) |
+| `/sandbox ro <path>` / `rw <path>` | extra bind |
+| `/sandbox deny-read <path>` | shadow a path (`~` expands) |
+| `/sandbox deny-write <glob>` | shadow cwd files matching a glob |
 
-## Safety
+## Config
 
-- Never wraps a command already invoking `bwrap` or `sudo` (token match,
-  basename-aware).
-- If `bwrap` is not on `PATH`, sends one `host/say` notice per session and
-  allows the command. The notice needs the `host.say` capability; the plugin
-  degrades gracefully without it.
-- Fails open: any internal error allows the command. A broken sandbox must
-  not brick bash.
+`~/.gray/sandbox/config.json` — flat keys or the upstream nested shape,
+both spellings (`allowed_domains`/`allowedDomains`) accepted:
 
-## Wire
+```json
+{
+  "enabled": true,
+  "network": {
+    "mode": "allowlist",
+    "allowed_domains": ["github.com", "*.github.com", "*.npmjs.org"],
+    "denied_domains": ["pastebin.com"]
+  },
+  "filesystem": {
+    "deny_read": ["~/.aws", "~/.gnupg", "~/.netrc", "~/.docker"],
+    "allow_write": ["~/src"],
+    "deny_write": [".env", ".env.*", "*.pem", "*.key"]
+  },
+  "extra_ro": [],
+  "extra_rw": [],
+  "passthrough": ["bwrap", "sudo", "docker", "podman"]
+}
+```
 
-`plugin/manifest`, `tool/before`, `command/run`, `plugin/shutdown`, plus
-outgoing `host/say` requests (string ids; responses are consumed, never
-replied to). Protocol 2.0, hook `tool/before`, capability `host.say`.
+`"network": true/false` and `"on"|"off"` strings are also accepted
+(legacy compat).
+
+## Dependencies
+
+- `bwrap` (bubblewrap) — required; plugin warns once and passes
+  commands through when absent
+- `socat` — required only for `net allowlist` (in-sandbox bridge);
+  without it allowlist mode fails closed
+
+## Differences from sandbox-runtime
+
+- `~/.ssh` is **not** deny-read by default (git-over-ssh pushes need it)
+  — add it with `/sandbox deny-read ~/.ssh` if you don't.
+- `deny_write` shadows only *existing* cwd entries at wrap time —
+  a file created fresh in a writable dir can't be pre-mounted.
+- The allowlist filter only sees traffic honoring `http_proxy`
+  (curl/npm/pip/cargo do; raw sockets and SSH don't — SSH just fails
+  inside allowlist mode).
+- Linux only; macOS seatbelt is not implemented.
 
 ## Install
 
-```sh
-gray plugin install sandbox
-gray plugin capabilities sandbox --all   # grant host.say for the notice
+```bash
+cd gray-sandbox && cargo build --release
+install -m755 target/release/gray-sandbox ~/.local/bin/gray-sandbox
 ```
-
-## Develop
-
-```sh
-cargo test
-gray account check      # entry point + manifest handshake
-gray account publish    # check → build → release → publish to the gray registry
-```
-
-Bump `version` in `Cargo.toml` before each `publish`; the registry refuses to
-republish a version.
 
 ---
-Part of the [gray](https://github.com/vstaln/gray) plugin ecosystem —
-the open-source AI agent harness. <https://gray.alignment.id>
+
+Part of the [gray](https://gray.alignment.id) plugin ecosystem.
