@@ -27,17 +27,22 @@ Everything is read-only except the session cwd and configured extras.
 `~/.gray/sandbox/config.json`:
 
 ```json
-{"enabled": true, "network": false, "extra_ro": [], "extra_rw": []}
+{"enabled": true, "network": true, "extra_ro": [], "extra_rw": []}
 ```
 
-Defaults: sandbox on, network unshared, no extra binds. `~/` in extra paths
+Defaults: sandbox on, network allowed (a dev agent without network can't
+clone, build or push — turn it off with `/sandbox net off`). On top of
+`extra_rw`, toolchain dirs under $HOME are always bound read-write when they
+exist: `.cache .cargo .rustup .npm .bun .deno .local .gray go .m2 .gradle
+.venv .poetry` — so builds and installs work while the rest of $HOME stays
+read-only. `~/` in extra paths
 expands to `$HOME`; nonexistent extra paths are skipped so stale entries do
 not break wrapping.
 
 ## Commands
 
 - `/sandbox on|off` — enable or disable wrapping
-- `/sandbox net on|off` — allow or deny network (`net off` → `--unshare-net`)
+- `/sandbox net on|off` — allow or deny network (`net off` → `--unshare-net`; default on)
 - `/sandbox ro <path>` / `/sandbox rw <path>` — add read-only or writable binds
 - `/sandbox status` — show config and `bwrap` availability
 

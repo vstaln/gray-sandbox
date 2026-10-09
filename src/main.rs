@@ -6,10 +6,14 @@
 //!   bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp //!         [--ro-bind <p> <p>]… [--bind <p> <p>]… //!         --bind <cwd> <cwd> --chdir <cwd> [--unshare-net] //!         -- bash -lc '<quoted command>'
 //!
 //! Everything is read-only except the session cwd (and configured extras);
-//! `--unshare-net` is applied unless config `network` is true.
+//! `--unshare-net` is applied only when config `network` is false
+//! (default is ON — a dev agent without network can't clone, build or push).
+//! Build caches under $HOME (~/.cargo, ~/.cache, ~/.npm, ~/.local, ~/.gray,
+//! ~/go, ...) are bound read-write so toolchains work; the rest of $HOME
+//! stays read-only.
 //!
 //! Config: ~/.gray/sandbox/config.json —
-//!   {"enabled": true, "network": false, "extra_ro": [], "extra_rw": []}
+//!   {"enabled": true, "network": true, "extra_ro": [], "extra_rw": []}
 //! `/sandbox on|off|net on|net off|ro <path>|rw <path>|status`.
 //!
 //! Rules: never sandbox a command already invoking bwrap/sudo; never
@@ -59,10 +63,11 @@ fn config_file() -> PathBuf {
     state_dir().join("config.json")
 }
 
-/// Defaults when the file is absent or unreadable: sandbox on, no network.
+/// Defaults when the file is absent or unreadable: sandbox on, network on.
+/// (network-off broke every dev workflow; filesystem containment is the value.)
 fn load_config() -> Config {
     let Ok(s) = std::fs::read_to_string(config_file()) else {
-        return Config { enabled: true, ..Default::default() };
+        return Config { enabled: true, network: true, ..Default::default() };
     };
     let v: Value = serde_json::from_str(&s).unwrap_or(Value::Null);
     let list = |key: &str| {
@@ -73,7 +78,7 @@ fn load_config() -> Config {
     };
     Config {
         enabled: v.get("enabled").and_then(Value::as_bool).unwrap_or(true),
-        network: v.get("network").and_then(Value::as_bool).unwrap_or(false),
+        network: v.get("network").and_then(Value::as_bool).unwrap_or(true),
         extra_ro: list("extra_ro"),
         extra_rw: list("extra_rw"),
     }
@@ -145,6 +150,24 @@ fn shq(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
+/// Home dirs dev tooling must write (build caches, installs, gray's own
+/// state). Always bound read-write when they exist — user `extra_rw` adds
+/// more. Everything else under $HOME stays read-only.
+fn default_rw() -> Vec<String> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    [
+        ".cache", ".cargo", ".rustup", ".npm", ".bun", ".deno", ".local",
+        ".gray", ".config/pip", "go", ".m2", ".gradle", ".venv", ".poetry",
+        ".cache/go-build", ".gitconfig",
+    ]
+    .iter()
+    .map(|r| home.join(r).to_string_lossy().into_owned())
+    .filter(|p| Path::new(p).exists())
+    .collect()
+}
+
 fn expand_home(p: &str) -> String {
     if let Some(rest) = p.strip_prefix("~/")
         && let Some(home) = std::env::var_os("HOME")
@@ -160,7 +183,9 @@ fn wrap(command: &str, cwd: &str, cfg: &Config) -> Option<String> {
         return None;
     }
     let mut out = String::from("bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp");
-    for (flag, paths) in [("--ro-bind", &cfg.extra_ro), ("--bind", &cfg.extra_rw)] {
+    let mut rw = default_rw();
+    rw.extend(cfg.extra_rw.iter().cloned());
+    for (flag, paths) in [("--ro-bind", &cfg.extra_ro), ("--bind", &rw)] {
         for p in paths {
             let p = expand_home(p);
             if Path::new(&p).exists() {
@@ -322,6 +347,9 @@ mod tests {
             .unwrap()
     }
 
+    /// Serializes tests that mutate GRAY_HOME.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn cfg(enabled: bool, network: bool) -> Config {
         Config { enabled, network, extra_ro: vec![], extra_rw: vec![] }
     }
@@ -345,6 +373,34 @@ mod tests {
         assert!(w.contains(&format!("--bind {0} {0} --chdir {0}", shq(cwd))));
         assert!(w.contains("--unshare-net"));
         assert!(w.ends_with("-- bash -lc 'ls -la'"));
+    }
+
+    #[test]
+    fn absent_config_defaults_on_with_network() {
+        // Redirect state dir so the test reads no real config file.
+        let dir = std::env::temp_dir().join(format!("gray-sbx-noconf-{}", std::process::id()));
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("GRAY_HOME", &dir) };
+        let c = load_config();
+        unsafe { std::env::remove_var("GRAY_HOME") };
+        assert!(c.enabled);
+        assert!(c.network);
+    }
+
+    #[test]
+    fn default_rw_covers_toolchains() {
+        // Every listed path is under $HOME and only counted when it exists.
+        for p in default_rw() {
+            let home = std::env::var_os("HOME").unwrap().to_string_lossy().into_owned();
+            assert!(p.starts_with(&home), "{p} not under HOME");
+            assert!(std::path::Path::new(&p).exists());
+        }
+        // And the wrap actually emits at least one rw bind (this box has .cargo/.cache).
+        let dir = std::env::temp_dir().join(format!("gray-sbx-rw-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let w = wrap("ls", dir.to_str().unwrap(), &cfg(true, true)).unwrap();
+        assert!(w.matches("--bind").count() >= 2, "expected cache binds + cwd: {w}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
