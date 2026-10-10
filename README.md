@@ -1,11 +1,25 @@
-<p align="center"><img src="assets/gray-logo.svg" width="120" alt="gray logo"></p>
-<h1 align="center">gray-sandbox</h1>
-<p align="center">OS-level sandboxing for bash commands — bubblewrap filesystem isolation with a filtering network proxy, modeled on Anthropic's <code>sandbox-runtime</code>.</p>
-<p align="center">
-  <a href="https://github.com/vstaln/gray-sandbox/blob/main/LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
-  <img alt="gray plugin" src="https://img.shields.io/badge/gray-plugin-7aa2f7.svg">
-  <img alt="rust" src="https://img.shields.io/badge/built%20with-rust-orange.svg">
-</p>
+<div align="center">
+  <img alt="gray-sandbox" src="assets/icon.svg" width="120" height="120" />
+  <h1>gray-sandbox</h1>
+  <p><strong>Run bash commands under a configurable bubblewrap sandbox.</strong></p>
+  <p>
+    <a href="https://gray.alignment.id">Website</a> ·
+    <a href="https://gray.alignment.id/plugins/gray-sandbox">Store</a> ·
+    <a href="https://github.com/vstaln/gray-sandbox">Source</a> ·
+    <a href="https://github.com/vstaln/gray">gray</a>
+  </p>
+  <p>
+    <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-1c1c20?style=flat-square&labelColor=0a0a0b" /></a>
+    <a href="https://www.rust-lang.org"><img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-rust-1c1c20?style=flat-square&labelColor=0a0a0b&logo=rust&logoColor=d4a373" /></a>
+    <a href="https://gray.alignment.id/plugins/gray-sandbox"><img alt="gray plugin" src="https://img.shields.io/badge/gray-plugin-1c1c20?style=flat-square&labelColor=0a0a0b&color=7aa2f7" /></a>
+  </p>
+</div>
+
+<br/>
+
+```bash
+gray plugin install gray-sandbox
+```
 
 ## What it does
 
@@ -102,6 +116,10 @@ both spellings (`allowed_domains`/`allowedDomains`) accepted:
 cd gray-sandbox && cargo build --release
 install -m755 target/release/gray-sandbox ~/.local/bin/gray-sandbox
 ```
+
+## Tags
+
+`gray` `plugin` `sandbox` `rust`
 
 ---
 
