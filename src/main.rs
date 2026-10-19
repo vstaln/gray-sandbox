@@ -43,12 +43,19 @@
 //! closed because silently opening the network is worse.
 
 use std::collections::HashSet;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, Write};
+#[cfg(unix)]
+use std::io::{BufReader, Read};
+#[cfg(unix)]
 use std::net::{Shutdown, TcpStream};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{LazyLock, Mutex, Once};
+#[cfg(unix)]
+use std::sync::Once;
+use std::sync::{LazyLock, Mutex};
+#[cfg(unix)]
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -111,7 +118,7 @@ const DEFAULT_PASSTHROUGH: &[&str] =
 fn state_dir() -> PathBuf {
     std::env::var_os("GRAY_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".gray")))
+        .or_else(|| std::env::home_dir().map(|h| h.join(".gray")))
         .unwrap_or_else(|| PathBuf::from("."))
         .join("sandbox")
 }
@@ -265,6 +272,7 @@ fn say_once(session: &str, text: &str) {
 
 /// `*.github.com` matches `api.github.com` AND bare `github.com`;
 /// a plain pattern matches exactly. Port is stripped before matching.
+#[cfg_attr(not(unix), allow(dead_code))]
 fn domain_matches(pattern: &str, host: &str) -> bool {
     let host = host.split(':').next().unwrap_or(host).to_lowercase();
     let pat = pattern.to_lowercase();
@@ -275,6 +283,7 @@ fn domain_matches(pattern: &str, host: &str) -> bool {
     }
 }
 
+#[cfg_attr(not(unix), allow(dead_code))]
 fn domain_allowed(host: &str, cfg: &Config) -> bool {
     if cfg.denied_domains.iter().any(|p| domain_matches(p, host)) {
         return false;
@@ -283,10 +292,14 @@ fn domain_allowed(host: &str, cfg: &Config) -> bool {
 }
 
 // ── filtering CONNECT proxy (network `allowlist` mode) ──────────────────
+// Unix sockets only — on other platforms `allowlist` fails closed.
 
+#[cfg(unix)]
 const PROXY_PORT: u16 = 18080;
+#[cfg(unix)]
 static PROXY_STARTED: Once = Once::new();
 
+#[cfg(unix)]
 fn proxy_sock() -> PathBuf {
     state_dir().join("run").join("proxy.sock")
 }
@@ -294,6 +307,7 @@ fn proxy_sock() -> PathBuf {
 /// Lazily bind the unix-socket CONNECT proxy once per sidecar lifetime.
 /// Domain lists are read from config per request, so `/sandbox allow …`
 /// takes effect immediately.
+#[cfg(unix)]
 fn ensure_proxy() {
     PROXY_STARTED.call_once(|| {
         let dir = proxy_sock().parent().unwrap().to_path_buf();
@@ -313,6 +327,7 @@ fn ensure_proxy() {
 }
 
 /// One proxied connection: read the request head, CONNECT-filter, tunnel.
+#[cfg(unix)]
 fn handle_conn(stream: UnixStream) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let mut reader = BufReader::new(match stream.try_clone() {
@@ -399,24 +414,45 @@ fn handle_conn(stream: UnixStream) {
 // ── wrapping ────────────────────────────────────────────────────────────
 
 fn have_tool(name: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|p| {
-            std::env::split_paths(&p).any(|d| {
-                let f = d.join(name);
-                f.is_file()
-                    && std::os::unix::fs::PermissionsExt::mode(
-                        &f.metadata()
-                            .map(|m| m.permissions())
-                            .unwrap_or_else(|_| {
-                                std::fs::Permissions::from(
-                                    std::os::unix::fs::PermissionsExt::from_mode(0),
-                                )
-                            }),
-                    ) & 0o111
-                        != 0
-            })
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|d| {
+        tool_candidates(name).iter().any(|n| {
+            let f = d.join(n);
+            f.is_file() && is_executable(&f)
         })
+    })
+}
+
+/// Filenames that can launch `name` from PATH.
+#[cfg(windows)]
+fn tool_candidates(name: &str) -> Vec<String> {
+    let mut v = vec![name.to_string()];
+    for ext in ["exe", "cmd", "bat", "com"] {
+        v.push(format!("{name}.{ext}"));
+    }
+    v
+}
+
+#[cfg(not(windows))]
+fn tool_candidates(name: &str) -> Vec<String> {
+    vec![name.to_string()]
+}
+
+/// Executable bit on unix; elsewhere the candidate names already carry a
+/// runnable extension (or the platform has no exec bit at all).
+#[cfg(unix)]
+fn is_executable(f: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    f.metadata()
+        .map(|m| m.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_f: &Path) -> bool {
+    true
 }
 
 /// Any whitespace/pipe token invoking a passthrough command (basename, so
@@ -438,9 +474,7 @@ fn shq(s: &str) -> String {
 /// `filesystem.allowWrite` adds more. Everything else under $HOME stays
 /// read-only.
 fn default_rw() -> Vec<String> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
+    let home = std::env::home_dir().unwrap_or_default();
     [
         ".cache", ".cargo", ".rustup", ".npm", ".bun", ".deno", ".local",
         ".gray", ".config/pip", "go", ".m2", ".gradle", ".venv", ".poetry",
@@ -454,9 +488,9 @@ fn default_rw() -> Vec<String> {
 
 fn expand_home(p: &str) -> String {
     if let Some(rest) = p.strip_prefix("~/")
-        && let Some(home) = std::env::var_os("HOME")
+        && let Some(home) = std::env::home_dir()
     {
-        return PathBuf::from(home).join(rest).to_string_lossy().into_owned();
+        return home.join(rest).to_string_lossy().into_owned();
     }
     p.to_string()
 }
@@ -550,27 +584,43 @@ fn wrap(command: &str, cwd: &str, cfg: &Config, session: &str) -> Option<String>
                 );
                 format!(" --unshare-net -- bash -lc {}", shq(command))
             } else {
-                ensure_proxy();
-                let sock = proxy_sock().to_string_lossy().into_owned();
-                format!(
-                    " --unshare-net \
-                     --setenv http_proxy http://127.0.0.1:{port} \
-                     --setenv https_proxy http://127.0.0.1:{port} \
-                     --setenv all_proxy http://127.0.0.1:{port} \
-                     --setenv no_proxy 127.0.0.1,localhost \
-                     -- bash -c {} ",
-                    shq(&format!(
-                        "socat TCP-LISTEN:{},fork,bind=127.0.0.1,reuseaddr \
-                         UNIX-CONNECT:{} </dev/null >/dev/null 2>&1 & exec bash -lc {}",
-                        PROXY_PORT, sock, shq(command)
-                    )),
-                    port = PROXY_PORT,
-                )
+                allowlist_bridge(command, session)
             }
         }
     };
     out.push_str(&format!(" --setenv GRAY_SANDBOX nested{tail}"));
     Some(out)
+}
+
+/// socat bridges loopback TCP → the sidecar's unix-socket CONNECT proxy.
+/// Unix only; other platforms fail closed (no network) rather than open.
+#[cfg(unix)]
+fn allowlist_bridge(command: &str, _session: &str) -> String {
+    ensure_proxy();
+    let sock = proxy_sock().to_string_lossy().into_owned();
+    format!(
+        " --unshare-net \
+         --setenv http_proxy http://127.0.0.1:{port} \
+         --setenv https_proxy http://127.0.0.1:{port} \
+         --setenv all_proxy http://127.0.0.1:{port} \
+         --setenv no_proxy 127.0.0.1,localhost \
+         -- bash -c {} ",
+        shq(&format!(
+            "socat TCP-LISTEN:{},fork,bind=127.0.0.1,reuseaddr \
+             UNIX-CONNECT:{} </dev/null >/dev/null 2>&1 & exec bash -lc {}",
+            PROXY_PORT, sock, shq(command)
+        )),
+        port = PROXY_PORT,
+    )
+}
+
+#[cfg(not(unix))]
+fn allowlist_bridge(command: &str, session: &str) -> String {
+    say_once(
+        session,
+        "sandbox net allowlist needs unix sockets — failing closed (no network)",
+    );
+    format!(" --unshare-net -- bash -lc {}", shq(command))
 }
 
 // ── wire ────────────────────────────────────────────────────────────────
@@ -845,7 +895,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let w = wrap("npm i", dir.to_str().unwrap(), &cfg(NetMode::Allowlist), "t").unwrap();
         assert!(w.contains("--unshare-net"));
-        if have_tool("socat") {
+        if have_tool("socat") && cfg!(unix) {
             assert!(w.contains("http://127.0.0.1:18080"));
             assert!(w.contains("socat TCP-LISTEN:18080"));
             assert!(w.contains("UNIX-CONNECT:"));
@@ -912,7 +962,7 @@ mod tests {
     #[test]
     fn default_rw_covers_toolchains() {
         for p in default_rw() {
-            let home = std::env::var_os("HOME").unwrap().to_string_lossy().into_owned();
+            let home = std::env::home_dir().unwrap().to_string_lossy().into_owned();
             assert!(p.starts_with(&home), "{p} not under HOME");
             assert!(std::path::Path::new(&p).exists());
         }
