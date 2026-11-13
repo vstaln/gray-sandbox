@@ -68,6 +68,7 @@ fn manifest() -> Value {
         "tools": [],
         "description": "run bash under a bubblewrap sandbox",
         "commands": ["/sandbox"],
+        "command_descriptions": {"/sandbox": "sandbox bash commands with bubblewrap"},
         "hooks": ["tool/before"],
         "capabilities": ["host.say"],
     })
