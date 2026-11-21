@@ -51,9 +51,9 @@ use std::net::{Shutdown, TcpStream};
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(unix)]
 use std::sync::Once;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 #[cfg(unix)]
 use std::time::Duration;
@@ -98,8 +98,15 @@ struct Config {
 /// Upstream (sandbox-runtime) default allowlist: package registries +
 /// GitHub. Extend via `/sandbox allow <domain>` or config.
 const DEFAULT_ALLOWED: &[&str] = &[
-    "npmjs.org", "*.npmjs.org", "registry.npmjs.org", "registry.yarnpkg.com",
-    "pypi.org", "*.pypi.org", "github.com", "*.github.com", "api.github.com",
+    "npmjs.org",
+    "*.npmjs.org",
+    "registry.npmjs.org",
+    "registry.yarnpkg.com",
+    "pypi.org",
+    "*.pypi.org",
+    "github.com",
+    "*.github.com",
+    "api.github.com",
     "raw.githubusercontent.com",
 ];
 
@@ -114,8 +121,17 @@ const DEFAULT_DENY_WRITE: &[&str] = &[".env", ".env.*", "*.pem", "*.key"];
 
 /// Commands never sandboxed (namespace/container tools would escape or
 /// break anyway).
-const DEFAULT_PASSTHROUGH: &[&str] =
-    &["bwrap", "sudo", "doas", "socat", "docker", "podman", "nerdctl", "buildah", "systemd-run"];
+const DEFAULT_PASSTHROUGH: &[&str] = &[
+    "bwrap",
+    "sudo",
+    "doas",
+    "socat",
+    "docker",
+    "podman",
+    "nerdctl",
+    "buildah",
+    "systemd-run",
+];
 
 fn state_dir() -> PathBuf {
     std::env::var_os("GRAY_HOME")
@@ -132,7 +148,11 @@ fn config_file() -> PathBuf {
 fn list_key(v: &Value, keys: &[&str]) -> Vec<String> {
     for k in keys {
         if let Some(a) = v.get(*k).and_then(Value::as_array) {
-            return a.iter().filter_map(Value::as_str).map(str::to_string).collect();
+            return a
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect();
         }
     }
     Vec::new()
@@ -156,7 +176,10 @@ fn parse_network(v: Option<&Value>) -> (NetMode, Vec<String>, Vec<String>) {
         ),
         Some(Value::Object(_)) => (
             NetMode::Allowlist,
-            list_key(v.unwrap(), &["allowed_domains", "allowedDomains", "allowed"]),
+            list_key(
+                v.unwrap(),
+                &["allowed_domains", "allowedDomains", "allowed"],
+            ),
             list_key(v.unwrap(), &["denied_domains", "deniedDomains", "denied"]),
         ),
         _ => (NetMode::On, vec![], vec![]),
@@ -198,7 +221,8 @@ fn load_config() -> Config {
     } else {
         denied_domains
     };
-    if matches!(v.get("network"), Some(Value::Object(_))) && net_mode == NetMode::Allowlist
+    if matches!(v.get("network"), Some(Value::Object(_)))
+        && net_mode == NetMode::Allowlist
         && allowed_domains.is_empty()
     {
         allowed_domains = DEFAULT_ALLOWED.iter().map(|s| s.to_string()).collect();
@@ -349,9 +373,8 @@ fn handle_conn(stream: UnixStream) {
     let mut parts = line.split_whitespace();
     let (method, target) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
     if !method.eq_ignore_ascii_case("connect") {
-        let _ = (&mut reader.get_ref()).write_all(
-            b"HTTP/1.1 501 Not Implemented\r\nContent-Length: 0\r\n\r\n",
-        );
+        let _ = (&mut reader.get_ref())
+            .write_all(b"HTTP/1.1 501 Not Implemented\r\nContent-Length: 0\r\n\r\n");
         return;
     }
     let host = target.split(':').next().unwrap_or("").to_string();
@@ -362,9 +385,8 @@ fn handle_conn(stream: UnixStream) {
         .unwrap_or(443);
     let cfg = load_config();
     if !domain_allowed(&host, &cfg) {
-        let _ = (&mut reader.get_ref()).write_all(
-            b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n",
-        );
+        let _ = (&mut reader.get_ref())
+            .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
         return;
     }
     let addr = format!("{host}:{port}");
@@ -398,7 +420,9 @@ fn handle_conn(stream: UnixStream) {
     let mut client = reader.into_inner();
     let _ = client.set_read_timeout(None);
     let _ = upstream.set_read_timeout(None);
-    let Ok(mut up2) = upstream.try_clone() else { return };
+    let Ok(mut up2) = upstream.try_clone() else {
+        return;
+    };
     let mut client2 = match client.try_clone() {
         Ok(c) => c,
         Err(_) => return,
@@ -478,9 +502,22 @@ fn shq(s: &str) -> String {
 fn default_rw() -> Vec<String> {
     let home = std::env::home_dir().unwrap_or_default();
     [
-        ".cache", ".cargo", ".rustup", ".npm", ".bun", ".deno", ".local",
-        ".gray", ".config/pip", "go", ".m2", ".gradle", ".venv", ".poetry",
-        ".cache/go-build", ".gitconfig",
+        ".cache",
+        ".cargo",
+        ".rustup",
+        ".npm",
+        ".bun",
+        ".deno",
+        ".local",
+        ".gray",
+        ".config/pip",
+        "go",
+        ".m2",
+        ".gradle",
+        ".venv",
+        ".poetry",
+        ".cache/go-build",
+        ".gitconfig",
     ]
     .iter()
     .map(|r| home.join(r).to_string_lossy().into_owned())
@@ -501,9 +538,7 @@ fn expand_home(p: &str) -> String {
 fn glob_match(pat: &str, name: &str) -> bool {
     fn inner(p: &[u8], n: &[u8]) -> bool {
         match (p.first(), n.first()) {
-            (Some(b'*'), _) => {
-                inner(&p[1..], n) || (!n.is_empty() && inner(p, &n[1..]))
-            }
+            (Some(b'*'), _) => inner(&p[1..], n) || (!n.is_empty() && inner(p, &n[1..])),
             (Some(b'?'), Some(_)) => inner(&p[1..], &n[1..]),
             (Some(a), Some(b)) => a == b && inner(&p[1..], &n[1..]),
             (None, None) => true,
@@ -518,7 +553,9 @@ fn glob_match(pat: &str, name: &str) -> bool {
 /// at wrap time.
 fn deny_write_paths(cwd: &str, globs: &[String]) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir(cwd) else { return out };
+    let Ok(rd) = std::fs::read_dir(cwd) else {
+        return out;
+    };
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().to_string();
         if globs.iter().any(|g| glob_match(g, &name)) {
@@ -542,9 +579,8 @@ fn wrap(command: &str, cwd: &str, cfg: &Config, session: &str) -> Option<String>
     {
         return None;
     }
-    let mut out = String::from(
-        "bwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp",
-    );
+    let mut out =
+        String::from("bwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp");
     let mut rw = default_rw();
     rw.extend(cfg.extra_rw.iter().cloned());
     for (flag, paths) in [("--ro-bind", &cfg.extra_ro), ("--bind", &rw)] {
@@ -610,7 +646,9 @@ fn allowlist_bridge(command: &str, _session: &str) -> String {
         shq(&format!(
             "socat TCP-LISTEN:{},fork,bind=127.0.0.1,reuseaddr \
              UNIX-CONNECT:{} </dev/null >/dev/null 2>&1 & exec bash -lc {}",
-            PROXY_PORT, sock, shq(command)
+            PROXY_PORT,
+            sock,
+            shq(command)
         )),
         port = PROXY_PORT,
     )
@@ -686,7 +724,10 @@ fn run_command(argv: &[&str]) -> String {
         }
         ["net", "allowlist"] | ["net", "allow"] | ["net", "filtered"] => {
             cfg.net_mode = NetMode::Allowlist;
-            save(&cfg, "sandbox network allowlist (CONNECT proxy + socat bridge)".into())
+            save(
+                &cfg,
+                "sandbox network allowlist (CONNECT proxy + socat bridge)".into(),
+            )
         }
         ["allow", d] | ["net", "allow", d] => {
             cfg.allowed_domains.push(d.to_string());
@@ -729,8 +770,16 @@ fn run_command(argv: &[&str]) -> String {
                 NetMode::Off => "off",
                 NetMode::Allowlist => "allowlist",
             },
-            if have_tool("bwrap") { "present" } else { "MISSING" },
-            if have_tool("socat") { "present" } else { "missing" },
+            if have_tool("bwrap") {
+                "present"
+            } else {
+                "MISSING"
+            },
+            if have_tool("socat") {
+                "present"
+            } else {
+                "missing"
+            },
             cfg.allowed_domains.join(", "),
             cfg.denied_domains.join(", "),
             cfg.deny_read.join(", "),
@@ -781,7 +830,9 @@ fn main() -> std::io::Result<()> {
     let mut stdout = std::io::stdout();
     for line in stdin.lock().lines() {
         let line = line?;
-        let Ok(req) = serde_json::from_str::<Value>(&line) else { continue };
+        let Ok(req) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
         let (reply, exit) = handle(&req);
         for msg in OUTBOX.lock().expect("outbox").drain(..) {
             writeln!(stdout, "{msg}")?;
@@ -803,12 +854,6 @@ mod tests {
 
     /// Serializes tests that mutate GRAY_HOME / GRAY_SANDBOX.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn call(method: &str, params: Value) -> Value {
-        handle(&json!({ "id": 1, "method": method, "params": params }))
-            .0
-            .unwrap()
-    }
 
     fn cfg(net_mode: NetMode) -> Config {
         Config {
@@ -895,7 +940,13 @@ mod tests {
         unsafe { std::env::remove_var("GRAY_SANDBOX") };
         let dir = std::env::temp_dir().join(format!("gray-sbx-al-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let w = wrap("npm i", dir.to_str().unwrap(), &cfg(NetMode::Allowlist), "t").unwrap();
+        let w = wrap(
+            "npm i",
+            dir.to_str().unwrap(),
+            &cfg(NetMode::Allowlist),
+            "t",
+        )
+        .unwrap();
         assert!(w.contains("--unshare-net"));
         if have_tool("socat") && cfg!(unix) {
             assert!(w.contains("http://127.0.0.1:18080"));
@@ -920,7 +971,10 @@ mod tests {
         let mut c = cfg(NetMode::On);
         c.deny_write = vec!["*.env".into()];
         let w = wrap("ls", &cwd, &c, "t").unwrap();
-        assert!(w.contains(&format!("--ro-bind /dev/null {}", shq(&dir.join("prod.env").to_string_lossy()))));
+        assert!(w.contains(&format!(
+            "--ro-bind /dev/null {}",
+            shq(&dir.join("prod.env").to_string_lossy())
+        )));
         assert!(!w.contains("keep.txt"));
         // deny binds come after the writable cwd bind
         assert!(w.find("--bind").unwrap() < w.find("prod.env").unwrap());
@@ -941,7 +995,10 @@ mod tests {
     fn parse_network_shapes() {
         assert!(matches!(parse_network(Some(&json!(false))).0, NetMode::Off));
         assert!(matches!(parse_network(Some(&json!(true))).0, NetMode::On));
-        assert!(matches!(parse_network(Some(&json!("allowlist"))).0, NetMode::Allowlist));
+        assert!(matches!(
+            parse_network(Some(&json!("allowlist"))).0,
+            NetMode::Allowlist
+        ));
         let (m, a, _d) = parse_network(Some(&json!({
             "allowedDomains": ["github.com"], "deniedDomains": ["x.evil"]
         })));
